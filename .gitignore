@@ -1,0 +1,52 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+.python-version
+
+# Packaging
+build/
+dist/
+*.egg-info/
+
+# Testing/coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# IDE/editor
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+scanner.log
+
+# Databases
+*.db
+servers.db
+
+# Telethon session files
+*.session
+*.session-journal
+
+# External binaries (downloaded locally)
+xray-knife/
+
+# Secrets / local config
+config.json
+
+

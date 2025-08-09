@@ -1,0 +1,48 @@
+{
+  "telegram": {
+    "api_id": 1234567,
+    "api_hash": "YOUR_API_HASH",
+    "session_name": "my_telegram_session",
+    "target_groups": [
+      -1001234567890
+    ],
+    "fetch_chunk_size": 200,
+    "proxy": {
+      "enabled": false,
+      "scheme": "socks5",
+      "hostname": "127.0.0.1",
+      "port": 9050
+    }
+  },
+  "xray_knife": {
+    "path": "./xray-knife/xray-knife",
+    "test_args": [
+      "-t", "20"
+    ]
+  },
+  "speed_test": {
+    "enabled": true,
+    "min_download_mbps": 5.0,
+    "max_candidates_per_location": 3
+  },
+  "github_repo": {
+    "enabled": true,
+    "github_token": "YOUR_GITHUB_PERSONAL_ACCESS_TOKEN",
+    "owner": "YOUR_GITHUB_USERNAME",
+    "repo": "YOUR_REPO_NAME",
+    "file_path": "path/to/subscription.txt",
+    "commit_message": "Update proxy subscription"
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "scanner.log"
+  },
+  "database": {
+    "path": "servers.db",
+    "retest_window_hours": 6,
+    "max_retries": 3,
+    "max_servers_per_location": 10
+  }
+}
+
+

@@ -1,6 +1,7 @@
 # vless_scanner/app.py
 import asyncio
 import logging
+from logging.handlers import RotatingFileHandler
 import signal
 from config import load_config, ConfigError
 from core.pipeline import Pipeline
@@ -22,11 +23,16 @@ def setup_logging(config):
     """Initializes the logging configuration."""
     log_level = config.get('logging', {}).get('level', 'INFO').upper()
     log_file = config.get('logging', {}).get('file', 'scanner.log')
-    logging.basicConfig(
-        level=log_level,
-        format='%(asctime)s - %(levelname)s - %(module)s - %(message)s',
-        handlers=[logging.FileHandler(log_file, mode='w'), logging.StreamHandler()]
-    )
+    handlers = [logging.StreamHandler()]
+    rotate_cfg = config.get('logging', {}).get('rotate', {})
+    if rotate_cfg.get('enabled'):
+        max_bytes = int(rotate_cfg.get('max_bytes', 5 * 1024 * 1024))
+        backups = int(rotate_cfg.get('backup_count', 3))
+        handlers.append(RotatingFileHandler(log_file, maxBytes=max_bytes, backupCount=backups))
+    else:
+        handlers.append(logging.FileHandler(log_file, mode='a'))
+
+    logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(module)s - %(message)s', handlers=handlers)
 
 def main():
     """Initializes and runs the application pipeline."""

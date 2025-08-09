@@ -8,7 +8,7 @@ This tool scans configured Telegram groups for proxy links, tests them with `xra
 - **Asynchronous pipeline**: Non-blocking I/O with `asyncio` and `aiosqlite`.
 - **Latency and selective speed tests**: Uses `xray-knife` for both latency checks and optional speed tests.
 - **Persistence and curation**: Keeps historical results, caps servers per location, and retries failed links.
-- **Optional GitHub upload**: Updates or creates a repo file with the final subscription content.
+- **Optional GitHub upload**: Updates or creates a repo file with the final subscription content. Set `github_repo.upload_base64` to true if you need to store base64 content; otherwise raw text is uploaded.
 - **Graceful shutdown**: Safely interrupts long-running tasks on SIGINT/SIGTERM.
 
 ## Requirements
@@ -57,6 +57,14 @@ Edit `config.json` with your values. Example:
     "path": "./xray-knife/xray-knife",
     "test_args": ["-t", "20"]
   },
+  "internal_proxy": {
+    "enabled": false,
+    "selector": "speed_passed",
+    "max_links": 1,
+    "listen_host": "127.0.0.1",
+    "listen_port": 1080,
+    "xray_knife_args": []
+  },
   "speed_test": {
     "enabled": true,
     "min_download_mbps": 5.0,
@@ -95,6 +103,18 @@ Notes:
 3. Optionally select top latency-passed candidates per location and run speed tests; persist results and pick the best per location.
 4. If enabled, upload a base64-encoded subscription (newline-separated links) to the configured GitHub repo/file.
 
+### Optional: Run through your own internal proxy
+
+When `internal_proxy.enabled` is true, the app will:
+- Pick one or more of the best links from the database (by `selector`) and start an `xray-knife` local SOCKS5 proxy.
+- Route Telegram collection through this local proxy.
+
+Config options:
+- `selector`: `speed_passed` (download desc) or `latency_passed` (delay asc)
+- `max_links`: number of links to feed to the internal proxy
+- `listen_host` / `listen_port`: where the local SOCKS5 listens
+- `xray_knife_args`: extra CLI flags passed to `xray-knife proxy` (advanced)
+
 ## Run
 
 ```bash
@@ -103,7 +123,7 @@ python app.py
 
 On first run, Telethon will prompt for your phone number, login code, and 2FA (if enabled) to create the `.session` file.
 
-Logs are written to `scanner.log` by default.
+Logs are written to `scanner.log` by default; optional rotation can be enabled via `logging.rotate`.
 
 ## Scheduling (optional)
 

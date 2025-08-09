@@ -11,7 +11,8 @@ class DatabaseManager:
         self.conn = None
 
     async def connect(self):
-        if self.conn and not self.conn.is_closed(): return
+        if self.conn is not None:
+            return
         self.conn = await aiosqlite.connect(self.db_path)
         self.conn.row_factory = aiosqlite.Row
         await self.conn.execute("PRAGMA journal_mode=WAL;")
@@ -61,8 +62,13 @@ class DatabaseManager:
 
     async def get_links_to_test(self, new_links: set, retest_window_hours: int, max_retries: int) -> set:
         links_to_test = set(new_links)
-        retest_threshold = datetime.datetime.now() - datetime.timedelta(hours=retest_window_hours)
-        query = "SELECT link FROM servers WHERE status = 'failed' AND retry_count < ? OR last_tested < ?"
+        now = datetime.datetime.utcnow()
+        retest_threshold = now - datetime.timedelta(hours=retest_window_hours)
+        query = (
+            "SELECT link FROM servers "
+            "WHERE (status = 'failed' AND retry_count < ?) "
+            "OR (last_tested IS NULL OR last_tested < ?)"
+        )
         async with self.conn.execute(query, (max_retries, retest_threshold)) as cursor:
             async for row in cursor:
                 links_to_test.add(row[0])
@@ -125,6 +131,39 @@ class DatabaseManager:
                 if location not in servers_by_location: servers_by_location[location] = []
                 servers_by_location[location].append(link)
         return servers_by_location
+
+    async def get_proxy_candidates(self, selector: str = 'speed_passed', max_links: int = 1) -> list[str]:
+        """Returns a list of links to be used for running an internal proxy.
+
+        selector:
+          - 'speed_passed': prefer servers with recorded download speed, order by download desc
+          - 'latency_passed': fall back to latency-passed, order by delay asc
+        """
+        links: list[str] = []
+        if selector == 'speed_passed':
+            query = """
+                SELECT link FROM servers
+                WHERE status = 'speed_passed'
+                ORDER BY (download IS NULL) ASC, download DESC, (speed_tested_at IS NULL) ASC, speed_tested_at DESC
+                LIMIT ?
+            """
+            async with self.conn.execute(query, (max_links,)) as cursor:
+                async for row in cursor:
+                    links.append(row[0])
+            if links:
+                return links
+
+        # Fallback to latency_passed when no speed_passed found or selector is latency_passed
+        query = """
+            SELECT link FROM servers
+            WHERE status = 'latency_passed'
+            ORDER BY (delay IS NULL) ASC, delay ASC, (last_tested IS NULL) ASC, last_tested DESC
+            LIMIT ?
+        """
+        async with self.conn.execute(query, (max_links,)) as cursor:
+            async for row in cursor:
+                links.append(row[0])
+        return links
 
     async def close(self):
         if self.conn: await self.conn.close()

@@ -20,6 +20,14 @@
       "-t", "20"
     ]
   },
+  "internal_proxy": {
+    "enabled": false,
+    "selector": "speed_passed", 
+    "max_links": 1,
+    "listen_host": "127.0.0.1",
+    "listen_port": 1080,
+    "xray_knife_args": []
+  },
   "speed_test": {
     "enabled": true,
     "min_download_mbps": 5.0,
@@ -31,11 +39,13 @@
     "owner": "YOUR_GITHUB_USERNAME",
     "repo": "YOUR_REPO_NAME",
     "file_path": "path/to/subscription.txt",
-    "commit_message": "Update proxy subscription"
+    "commit_message": "Update proxy subscription",
+    "upload_base64": false
   },
   "logging": {
     "level": "INFO",
-    "file": "scanner.log"
+    "file": "scanner.log",
+    "rotate": { "enabled": true, "max_bytes": 5242880, "backup_count": 3 }
   },
   "database": {
     "path": "servers.db",

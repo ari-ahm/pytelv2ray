@@ -3,6 +3,7 @@ import logging
 import base64
 import shutil
 from pathlib import Path
+from .proxy import InternalProxyManager
 
 class Pipeline:
     """Orchestrates the entire process from collection to uploading."""
@@ -20,9 +21,48 @@ class Pipeline:
         try:
             await self.db.connect()
 
-            # Stage 1: Collect new links from Telegram
-            new_links = await self.collector.collect_links()
+            runtime_proxy_cfg = None
+            proxy_manager = None
+            # Optionally start internal proxy
+            internal_proxy_cfg = self.config.get('internal_proxy', {})
+            if internal_proxy_cfg.get('enabled'):
+                logging.info("--- Internal Proxy: Selecting candidates and starting local proxy ---")
+                selector = internal_proxy_cfg.get('selector', 'speed_passed')
+                max_links = max(1, int(internal_proxy_cfg.get('max_links', 1)))
+                listen_host = internal_proxy_cfg.get('listen_host', '127.0.0.1')
+                listen_port = int(internal_proxy_cfg.get('listen_port', 1080))
+                extra_args = internal_proxy_cfg.get('xray_knife_args', [])
+
+                links = await self.db.get_proxy_candidates(selector=selector, max_links=max_links)
+                if links:
+                    proxy_manager = InternalProxyManager(self.config['xray_knife'], listen_host, listen_port, extra_args)
+                    try:
+                        runtime_proxy_cfg = await proxy_manager.start(links)
+                    except Exception as e:
+                        logging.warning(f"Could not start internal proxy: {e}")
+                else:
+                    logging.warning("No suitable links found to start internal proxy; proceeding without it.")
+
+            # Determine per-group last progress
+            last_progress = {}
+            for group_id in self.config['telegram']['target_groups']:
+                try:
+                    last_id = await self.db.get_group_progress(group_id)
+                except Exception:
+                    last_id = None
+                last_progress[group_id] = last_id
+
+            # Stage 1: Collect new links from Telegram (optionally via internal proxy)
+            new_links, new_progress = await self.collector.collect_links(runtime_proxy=runtime_proxy_cfg, last_progress=last_progress)
             if self.shutdown_event.is_set(): return
+
+            # Persist updated group progress
+            try:
+                for gid, last_msg_id in new_progress.items():
+                    if last_msg_id is not None:
+                        await self.db.update_group_progress(gid, last_msg_id)
+            except Exception as e:
+                logging.warning(f"Failed to persist group progress: {e}")
 
             # Stage 2: Perform latency tests on new and old servers
             await self._perform_latency_tests(new_links)
@@ -39,6 +79,12 @@ class Pipeline:
             await self.db.close()
             self._cleanup_xray_knife_db()
             self.stats.print_summary()
+            # Ensure proxy is stopped
+            try:
+                if 'proxy_manager' in locals() and proxy_manager:
+                    await proxy_manager.stop()
+            except Exception as e:
+                logging.warning(f"Error while stopping internal proxy: {e}")
 
     async def _perform_latency_tests(self, new_links: set):
         logging.info("--- Stage 2: Performing Latency Tests ---")
@@ -70,6 +116,10 @@ class Pipeline:
                 if link in results_map:
                     result = results_map[link]
                     await self.db.save_speed_test_result(result)
+                    # Apply min download threshold if configured
+                    min_mbps = float(self.config.get('speed_test', {}).get('min_download_mbps') or 0)
+                    if float(result.get('download', 0)) < min_mbps:
+                        continue
                     if not best_for_loc or float(result.get('download', 0)) > float(best_for_loc.get('download', 0)):
                         best_for_loc = result
             

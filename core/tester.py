@@ -21,7 +21,7 @@ class XrayKnifeTester:
         if not shutil.which(path):
             raise ServiceError(f"xray-knife binary not found or not executable at path: {path}")
 
-    async def run_test(self, links_to_test: set, speed_test=False) -> list[dict]:
+    async def run_test(self, links_to_test: set, speed_test=False, timeout_seconds: int | None = 300) -> list[dict]:
         if not links_to_test: return []
 
         test_args = self.config['test_args'] + ['-x', 'csv']
@@ -46,10 +46,13 @@ class XrayKnifeTester:
             wait_task = asyncio.create_task(process.wait())
             shutdown_task = asyncio.create_task(self.shutdown_event.wait())
             
-            done, pending = await asyncio.wait(
-                {wait_task, shutdown_task},
-                return_when=asyncio.FIRST_COMPLETED
-            )
+            tasks = {wait_task, shutdown_task}
+            if timeout_seconds and timeout_seconds > 0:
+                # Create a timeout task to prevent indefinite hangs
+                timeout_task = asyncio.create_task(asyncio.sleep(timeout_seconds))
+                tasks.add(timeout_task)
+
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
             if shutdown_task in done:
                 logging.warning("Shutdown signal received, terminating xray-knife process...")
@@ -58,6 +61,17 @@ class XrayKnifeTester:
                 # Cancel the process wait task to avoid a warning
                 wait_task.cancel()
                 raise asyncio.CancelledError()
+
+            if 'timeout_task' in locals() and timeout_task in done:
+                logging.error(f"xray-knife timed out after {timeout_seconds}s; terminating process...")
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+                wait_task.cancel()
+                raise ServiceError("xray-knife test timed out")
 
             # If we are here, the process finished on its own
             shutdown_task.cancel() # Clean up the shutdown watcher

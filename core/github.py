@@ -1,8 +1,9 @@
 # vless_scanner/core/github.py
+import os
 import asyncio
 import logging
-from github import Github, InputFile, UnknownObjectException
-from github.GithubException import GithubException
+from github import Github
+from github.GithubException import GithubException, UnknownObjectException
 
 class ServiceError(Exception):
     pass
@@ -18,12 +19,13 @@ class GithubUploader:
         
         logging.info(f"Attempting to update file in GitHub repo: {self.config['owner']}/{self.config['repo']}")
         try:
+            token = self.config.get('github_token') or os.environ.get('GITHUB_TOKEN')
             await asyncio.to_thread(
                 self._sync_update,
-                self.config['github_token'],
+                token,
                 f"{self.config['owner']}/{self.config['repo']}",
                 self.config['file_path'],
-                content,
+                content if not self.config.get('upload_base64') else content,
                 self.config['commit_message']
             )
             self.stats.increment('github_upload_success')
@@ -57,7 +59,7 @@ class GithubUploader:
                 logging.info(f"Successfully created new file '{file_path}' in repo '{repo_name}'.")
 
         except GithubException as e:
-            error_message = e.data.get('message', 'Unknown API error')
+            error_message = getattr(e, 'data', {}) .get('message', str(e)) if hasattr(e, 'data') else str(e)
             raise ServiceError(f"GitHub API error: {error_message}") from e
         except Exception as e:
             raise ServiceError(f"An unexpected error occurred during GitHub upload: {e}") from e

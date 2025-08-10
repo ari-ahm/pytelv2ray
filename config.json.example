@@ -22,7 +22,7 @@
   },
   "internal_proxy": {
     "enabled": false,
-    "selector": "speed_passed", 
+    "selector": "speed_passed",
     "max_links": 1,
     "listen_host": "127.0.0.1",
     "listen_port": 1080,
@@ -45,7 +45,11 @@
   "logging": {
     "level": "INFO",
     "file": "scanner.log",
-    "rotate": { "enabled": true, "max_bytes": 5242880, "backup_count": 3 }
+    "rotate": {
+      "enabled": true,
+      "max_bytes": 5242880,
+      "backup_count": 3
+    }
   },
   "database": {
     "path": "servers.db",

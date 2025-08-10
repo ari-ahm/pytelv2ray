@@ -2,7 +2,9 @@
 import logging
 import base64
 import shutil
+import re
 from pathlib import Path
+from datetime import datetime
 from .proxy import InternalProxyManager
 
 class Pipeline:
@@ -133,7 +135,12 @@ class Pipeline:
         if not final_servers or not self.config.get('github_repo', {}).get('enabled'): return
         logging.info("--- Stage 4: Uploading Subscription to GitHub Repo ---")
         
-        sub_content = "\n".join(final_servers.values())
+        renamed_links = []
+        for location, link in final_servers.items():
+            renamed_link = self._rename_link_with_location(link, location)
+            renamed_links.append(renamed_link)
+        
+        sub_content = "\n".join(renamed_links)
         encoded_content = base64.b64encode(sub_content.encode()).decode()
         
         await self.uploader.upload(encoded_content)
@@ -146,3 +153,112 @@ class Pipeline:
                 logging.info(f"Deleted xray-knife directory: {knife_db_dir}")
         except Exception as e:
             logging.error(f"Could not delete xray-knife directory: {e}")
+
+    def _rename_link_with_location(self, link: str, location: str) -> str:
+        """Rename a proxy link with location emoji and last tested timestamp in remarks."""
+        # Location to emoji mapping
+        location_emojis = {
+            'US': '🇺🇸', 'United States': '🇺🇸', 'America': '🇺🇸',
+            'UK': '🇬🇧', 'United Kingdom': '🇬🇧', 'England': '🇬🇧',
+            'DE': '🇩🇪', 'Germany': '🇩🇪',
+            'FR': '🇫🇷', 'France': '🇫🇷',
+            'JP': '🇯🇵', 'Japan': '🇯🇵',
+            'SG': '🇸🇬', 'Singapore': '🇸🇬',
+            'HK': '🇭🇰', 'Hong Kong': '🇭🇰',
+            'TW': '🇹🇼', 'Taiwan': '🇹🇼',
+            'KR': '🇰🇷', 'South Korea': '🇰🇷', 'Korea': '🇰🇷',
+            'AU': '🇦🇺', 'Australia': '🇦🇺',
+            'CA': '🇨🇦', 'Canada': '🇨🇦',
+            'NL': '🇳🇱', 'Netherlands': '🇳🇱',
+            'CH': '🇨🇭', 'Switzerland': '🇨🇭',
+            'SE': '🇸🇪', 'Sweden': '🇸🇪',
+            'NO': '🇳🇴', 'Norway': '🇳🇴',
+            'FI': '🇫🇮', 'Finland': '🇫🇮',
+            'DK': '🇩🇰', 'Denmark': '🇩🇰',
+            'RU': '🇷🇺', 'Russia': '🇷🇺',
+            'CN': '🇨🇳', 'China': '🇨🇳',
+            'IN': '🇮🇳', 'India': '🇮🇳',
+            'BR': '🇧🇷', 'Brazil': '🇧🇷',
+            'MX': '🇲🇽', 'Mexico': '🇲🇽',
+            'AR': '🇦🇷', 'Argentina': '🇦🇷',
+            'CL': '🇨🇱', 'Chile': '🇨🇱',
+            'PE': '🇵🇪', 'Peru': '🇵🇪',
+            'CO': '🇨🇴', 'Colombia': '🇨🇴',
+            'VE': '🇻🇪', 'Venezuela': '🇻🇪',
+            'EG': '🇪🇬', 'Egypt': '🇪🇬',
+            'ZA': '🇿🇦', 'South Africa': '🇿🇦',
+            'NG': '🇳🇬', 'Nigeria': '🇳🇬',
+            'KE': '🇰🇪', 'Kenya': '🇰🇪',
+            'MA': '🇲🇦', 'Morocco': '🇲🇦',
+            'TR': '🇹🇷', 'Turkey': '🇹🇷',
+            'IL': '🇮🇱', 'Israel': '🇮🇱',
+            'AE': '🇦🇪', 'UAE': '🇦🇪', 'United Arab Emirates': '🇦🇪',
+            'SA': '🇸🇦', 'Saudi Arabia': '🇸🇦',
+            'QA': '🇶🇦', 'Qatar': '🇶🇦',
+            'KW': '🇰🇼', 'Kuwait': '🇰🇼',
+            'BH': '🇧🇭', 'Bahrain': '🇧🇭',
+            'OM': '🇴🇲', 'Oman': '🇴🇲',
+            'JO': '🇯🇴', 'Jordan': '🇯🇴',
+            'LB': '🇱🇧', 'Lebanon': '🇱🇧',
+            'SY': '🇸🇾', 'Syria': '🇸🇾',
+            'IQ': '🇮🇶', 'Iraq': '🇮🇶',
+            'IR': '🇮🇷', 'Iran': '🇮🇷',
+            'PK': '🇵🇰', 'Pakistan': '🇵🇰',
+            'BD': '🇧🇩', 'Bangladesh': '🇧🇩',
+            'LK': '🇱🇰', 'Sri Lanka': '🇱🇰',
+            'NP': '🇳🇵', 'Nepal': '🇳🇵',
+            'MM': '🇲🇲', 'Myanmar': '🇲🇲',
+            'TH': '🇹🇭', 'Thailand': '🇹🇭',
+            'VN': '🇻🇳', 'Vietnam': '🇻🇳',
+            'PH': '🇵🇭', 'Philippines': '🇵🇭',
+            'MY': '🇲🇾', 'Malaysia': '🇲🇾',
+            'ID': '🇮🇩', 'Indonesia': '🇮🇩',
+            'NZ': '🇳🇿', 'New Zealand': '🇳🇿',
+            'Unknown': '🌍', 'Other': '🌍'
+        }
+        
+        # Get emoji for location
+        emoji = location_emojis.get(location, '🌍')
+        
+        # Get last tested timestamp from database
+        last_tested = self._get_last_tested_timestamp(link)
+        timestamp_str = last_tested.strftime('%Y-%m-%d %H:%M') if last_tested else 'Unknown'
+        
+        # Create new remarks
+        new_remarks = f"{emoji} {location} | Tested: {timestamp_str}"
+        
+        # Update the link with new remarks
+        return self._update_link_remarks(link, new_remarks)
+
+    def _get_last_tested_timestamp(self, link: str) -> datetime | None:
+        """Get the last tested timestamp for a link from the database."""
+        try:
+            # This is a simplified approach - in practice you'd want to make this async
+            # and query the database properly
+            import sqlite3
+            conn = sqlite3.connect(self.config['database']['path'])
+            cursor = conn.execute(
+                "SELECT speed_tested_at FROM servers WHERE link = ? AND status = 'speed_passed'",
+                (link,)
+            )
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result and result[0]:
+                return datetime.fromisoformat(result[0])
+            return None
+        except Exception:
+            return None
+
+    def _update_link_remarks(self, link: str, new_remarks: str) -> str:
+        """Update the remarks section of a proxy link (after the #)."""
+        # Remove existing remarks if any
+        if '#' in link:
+            link = link.split('#')[0]
+        
+        # URL encode the remarks
+        import urllib.parse
+        encoded_remarks = urllib.parse.quote(new_remarks)
+        
+        # Add new remarks
+        return f"{link}#{encoded_remarks}"

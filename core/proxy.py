@@ -52,8 +52,8 @@ class InternalProxyManager:
             self.subcommand,
             '-f',
             links_path,
-            '--port',
-            str(self.listen_port),
+            '-I',
+            f"socks://{self.listen_host}:{self.listen_port}",
         ] + list(self.extra_args)
 
         logging.info(f"Starting internal proxy via xray-knife on {self.listen_host}:{self.listen_port} using {len(links)} link(s)...")

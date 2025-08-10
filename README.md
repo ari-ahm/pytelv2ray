@@ -8,8 +8,12 @@ This tool scans configured Telegram groups for proxy links, tests them with `xra
 - **Asynchronous pipeline**: Non-blocking I/O with `asyncio` and `aiosqlite`.
 - **Latency and selective speed tests**: Uses `xray-knife` for both latency checks and optional speed tests.
 - **Persistence and curation**: Keeps historical results, caps servers per location, and retries failed links.
+- **Progress-aware scanning**: Tracks last processed message per group to avoid reprocessing.
+- **Internal proxy support**: Can route Telegram collection through your own tested servers from the database.
+- **Link renaming**: Automatically adds location emojis and timestamps to uploaded links.
 - **Optional GitHub upload**: Updates or creates a repo file with the final subscription content. Set `github_repo.upload_base64` to true if you need to store base64 content; otherwise raw text is uploaded.
 - **Graceful shutdown**: Safely interrupts long-running tasks on SIGINT/SIGTERM.
+- **Log rotation**: Optional log file rotation to prevent disk space issues.
 
 ## Requirements
 
@@ -18,8 +22,8 @@ This tool scans configured Telegram groups for proxy links, tests them with `xra
   - `telethon`
   - `aiosqlite`
   - `PyGithub`
+  - `PySocks`
   - `pytest`, `pytest-asyncio` (for tests)
-  - If using a SOCKS proxy for Telegram, ensure `PySocks` is installed
 - External binary: `xray-knife` (see below)
 
 ## Install
@@ -76,11 +80,17 @@ Edit `config.json` with your values. Example:
     "owner": "YOUR_GITHUB_USERNAME",
     "repo": "YOUR_REPO_NAME",
     "file_path": "path/to/subscription.txt",
-    "commit_message": "Update proxy subscription"
+    "commit_message": "Update proxy subscription",
+    "upload_base64": false
   },
   "logging": {
     "level": "INFO",
-    "file": "scanner.log"
+    "file": "scanner.log",
+    "rotate": {
+      "enabled": true,
+      "max_bytes": 5242880,
+      "backup_count": 3
+    }
   },
   "database": {
     "path": "servers.db",
@@ -94,26 +104,38 @@ Edit `config.json` with your values. Example:
 Notes:
 - `telegram.api_hash` must be set (the app validates this and will exit if it is a placeholder).
 - `xray_knife.path` must point to the actual executable (the app validates it with your system PATH). If the file is inside a folder like `xray-knife/xray-knife`, set that exact path.
-- `speed_test.min_download_mbps` is currently a reserved field for future filtering; the best server per location is chosen by highest measured download speed.
+- `speed_test.min_download_mbps` filters out servers below this threshold when selecting best per location.
+- GitHub token can be set via `GITHUB_TOKEN` environment variable as fallback.
 
 ## How it works
 
-1. Collect recent messages from all configured Telegram groups and extract proxy links.
-2. Run `xray-knife` latency tests on new links plus eligible retries; persist results in SQLite.
-3. Optionally select top latency-passed candidates per location and run speed tests; persist results and pick the best per location.
-4. If enabled, upload a base64-encoded subscription (newline-separated links) to the configured GitHub repo/file.
+1. **Optional internal proxy**: If enabled, starts a local SOCKS5 proxy using the best servers from your database.
+2. **Collect messages**: Fetch recent messages from all configured Telegram groups and extract proxy links.
+3. **Latency testing**: Run `xray-knife` latency tests on new links plus eligible retries; persist results in SQLite.
+4. **Speed testing**: Optionally select top latency-passed candidates per location and run speed tests; persist results and pick the best per location.
+5. **Link renaming**: Add location emojis and timestamps to the final links.
+6. **GitHub upload**: If enabled, upload the subscription file to the configured GitHub repo.
 
-### Optional: Run through your own internal proxy
+### Internal Proxy Feature
 
 When `internal_proxy.enabled` is true, the app will:
 - Pick one or more of the best links from the database (by `selector`) and start an `xray-knife` local SOCKS5 proxy.
-- Route Telegram collection through this local proxy.
+- Route Telegram collection through this local proxy instead of direct connection or the configured proxy.
 
 Config options:
 - `selector`: `speed_passed` (download desc) or `latency_passed` (delay asc)
 - `max_links`: number of links to feed to the internal proxy
 - `listen_host` / `listen_port`: where the local SOCKS5 listens
 - `xray_knife_args`: extra CLI flags passed to `xray-knife proxy` (advanced)
+
+### Link Renaming
+
+Links uploaded to GitHub are automatically renamed with:
+- **Location emoji** (🇺🇸, 🇬🇧, 🇩🇪, etc.)
+- **Location name**
+- **Last tested timestamp** (URL encoded)
+
+Example: `vless://.../path#%F0%9F%87%BA%F0%9F%87%B8%20United%20States%20%7C%20Tested%3A%202025-01-15%2014%3A30`
 
 ## Run
 
@@ -135,7 +157,9 @@ Use cron/systemd to run periodically. Example crontab entry (every 30 minutes):
 
 ## Troubleshooting
 
-- Config error: Ensure `config.json` is valid JSON and required fields are not placeholders.
-- `xray-knife binary not found`: Verify `xray_knife.path` points to an executable and is accessible (use an absolute path if needed).
-- GitHub upload failures: Check token permissions (repo scope), repository name/owner, and that the file path is correct.
+- **Config error**: Ensure `config.json` is valid JSON and required fields are not placeholders.
+- **`xray-knife binary not found`**: Verify `xray_knife.path` points to an executable and is accessible (use an absolute path if needed).
+- **GitHub upload failures**: Check token permissions (repo scope), repository name/owner, and that the file path is correct.
+- **Internal proxy fails**: Ensure you have speed/latency-tested servers in the database before enabling.
+- **Large log files**: Enable log rotation in config to prevent disk space issues.
 

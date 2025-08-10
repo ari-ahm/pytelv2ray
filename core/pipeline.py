@@ -40,10 +40,25 @@ class Pipeline:
                     proxy_manager = InternalProxyManager(self.config['xray_knife'], listen_host, listen_port, extra_args)
                     try:
                         runtime_proxy_cfg = await proxy_manager.start(links)
+                        logging.info("Internal proxy started successfully")
                     except Exception as e:
                         logging.warning(f"Could not start internal proxy: {e}")
+                        # Fallback to normal Telegram proxy if configured
+                        if self.config.get('telegram', {}).get('proxy', {}).get('enabled'):
+                            logging.info("Falling back to configured Telegram proxy")
+                            runtime_proxy_cfg = self.config['telegram']['proxy']
+                        else:
+                            logging.info("No fallback proxy configured, using direct connection")
+                            runtime_proxy_cfg = None
                 else:
                     logging.warning("No suitable links found to start internal proxy; proceeding without it.")
+                    # Fallback to normal Telegram proxy if configured
+                    if self.config.get('telegram', {}).get('proxy', {}).get('enabled'):
+                        logging.info("Falling back to configured Telegram proxy")
+                        runtime_proxy_cfg = self.config['telegram']['proxy']
+                    else:
+                        logging.info("No fallback proxy configured, using direct connection")
+                        runtime_proxy_cfg = None
 
             # Determine per-group last progress
             last_progress = {}

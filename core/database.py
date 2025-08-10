@@ -67,9 +67,10 @@ class DatabaseManager:
         query = (
             "SELECT link FROM servers "
             "WHERE (status = 'failed' AND retry_count < ?) "
-            "OR (last_tested IS NULL OR last_tested < ?)"
+            "OR (status = 'latency_passed' AND (last_tested IS NULL OR last_tested < ?)) "
+            "OR (status = 'speed_passed' AND (last_tested IS NULL OR last_tested < ?))"
         )
-        async with self.conn.execute(query, (max_retries, retest_threshold)) as cursor:
+        async with self.conn.execute(query, (max_retries, retest_threshold, retest_threshold)) as cursor:
             async for row in cursor:
                 links_to_test.add(row[0])
         return links_to_test
@@ -109,7 +110,18 @@ class DatabaseManager:
         await self.conn.execute(update_query, (res['link'], new_delay, location, datetime.datetime.now()))
 
     async def _handle_failed_server(self, res: dict):
-        query = "INSERT INTO servers (link, status, last_tested, retry_count) VALUES (?, 'failed', ?, 1) ON CONFLICT(link) DO UPDATE SET status='failed', last_tested=excluded.last_tested, retry_count=retry_count+1;"
+        # If this was a speed_passed server that failed, clear the speed data
+        query = """
+            INSERT INTO servers (link, status, last_tested, retry_count, download, upload, speed_tested_at) 
+            VALUES (?, 'failed', ?, 1, NULL, NULL, NULL) 
+            ON CONFLICT(link) DO UPDATE SET 
+                status='failed', 
+                last_tested=excluded.last_tested, 
+                retry_count=retry_count+1,
+                download=NULL,
+                upload=NULL,
+                speed_tested_at=NULL
+        """
         await self.conn.execute(query, (res['link'], datetime.datetime.now()))
 
     async def save_speed_test_result(self, result: dict):
@@ -121,8 +133,17 @@ class DatabaseManager:
         servers_by_location = {}
         query = """
             SELECT location, link FROM (
-                SELECT *, ROW_NUMBER() OVER(PARTITION BY location ORDER BY delay ASC) as rn
-                FROM servers WHERE status = 'latency_passed' AND location IS NOT NULL AND location != ''
+                SELECT *, ROW_NUMBER() OVER(PARTITION BY location ORDER BY 
+                    CASE 
+                        WHEN status = 'speed_passed' THEN 0 
+                        ELSE 1 
+                    END,
+                    COALESCE(download, 0) DESC,
+                    COALESCE(delay, 999999) ASC
+                ) as rn
+                FROM servers 
+                WHERE (status = 'latency_passed' OR status = 'speed_passed') 
+                AND location IS NOT NULL AND location != ''
             ) WHERE rn <= ?
         """
         async with self.conn.execute(query, (max_candidates_per_loc,)) as cursor:

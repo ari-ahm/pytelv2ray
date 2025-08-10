@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 import tempfile
+import aiohttp
 
 
 class ServiceError(Exception):
@@ -79,11 +80,34 @@ class InternalProxyManager:
         }
 
     async def _ensure_started(self):
-        # Naive wait: ensure the process hasn't exited immediately
+        # Wait for process to start and then test connectivity
         await asyncio.sleep(0.5)
         if self.process and self.process.returncode is not None:
             stdout, stderr = await self.process.communicate()
             raise ServiceError(f"Internal proxy process exited early: {self.process.returncode}. Stderr: {stderr.decode()}\nStdout: {stdout.decode()}")
+        
+        # Test if the proxy is actually working
+        if not await self._health_check():
+            raise ServiceError("Internal proxy started but failed health check")
+
+    async def _health_check(self, timeout: int = 10) -> bool:
+        """Test if the internal proxy is working by making an HTTP request through it."""
+        try:
+            proxy_url = f"socks5://{self.listen_host}:{self.listen_port}"
+            connector = aiohttp.ProxyConnector.from_url(proxy_url)
+            
+            async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=timeout)) as session:
+                # Test with Cloudflare's DNS endpoint
+                async with session.get("https://1.1.1.1/cdn-cgi/trace") as response:
+                    if response.status == 200:
+                        logging.info("Internal proxy health check passed")
+                        return True
+                    else:
+                        logging.warning(f"Internal proxy health check failed with status {response.status}")
+                        return False
+        except Exception as e:
+            logging.warning(f"Internal proxy health check failed: {e}")
+            return False
 
     async def stop(self):
         if self.process:

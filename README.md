@@ -28,9 +28,9 @@ This tool scans configured Telegram groups for proxy links, tests them with `xra
 
 ## Install
 
-```bash
-pip install -r requirements.txt
-```
+    ```bash
+    pip install -r requirements.txt
+    ```
 
 ## External binary: xray-knife
 

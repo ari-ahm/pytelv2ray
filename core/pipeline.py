@@ -141,9 +141,8 @@ class Pipeline:
             renamed_links.append(renamed_link)
         
         sub_content = "\n".join(renamed_links)
-        encoded_content = base64.b64encode(sub_content.encode()).decode()
         
-        await self.uploader.upload(encoded_content)
+        await self.uploader.upload(sub_content)
 
     def _cleanup_xray_knife_db(self):
         try:

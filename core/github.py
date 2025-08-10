@@ -20,12 +20,20 @@ class GithubUploader:
         logging.info(f"Attempting to update file in GitHub repo: {self.config['owner']}/{self.config['repo']}")
         try:
             token = self.config.get('github_token') or os.environ.get('GITHUB_TOKEN')
+            
+            # Handle base64 encoding based on config
+            if self.config.get('upload_base64'):
+                import base64
+                upload_content = base64.b64encode(content.encode()).decode()
+            else:
+                upload_content = content
+                
             await asyncio.to_thread(
                 self._sync_update,
                 token,
                 f"{self.config['owner']}/{self.config['repo']}",
                 self.config['file_path'],
-                content if not self.config.get('upload_base64') else content,
+                upload_content,
                 self.config['commit_message']
             )
             self.stats.increment('github_upload_success')

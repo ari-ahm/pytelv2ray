@@ -3,6 +3,7 @@ import logging
 import base64
 import shutil
 import re
+import json
 from pathlib import Path
 from datetime import datetime
 from .proxy import InternalProxyManager
@@ -265,14 +266,43 @@ class Pipeline:
             return None
 
     def _update_link_remarks(self, link: str, new_remarks: str) -> str:
-        """Update the remarks section of a proxy link (after the #)."""
-        # Remove existing remarks if any
+        """Update the remarks section of a proxy link. For vmess: update Base64 JSON 'ps'; others: use URL-encoded #remarks."""
+        if link.lower().startswith('vmess://'):
+            return self._update_vmess_ps(link, new_remarks)
+        
+        # Non-vmess: append URL-encoded remarks after #
         if '#' in link:
             link = link.split('#')[0]
-        
-        # URL encode the remarks
         import urllib.parse
         encoded_remarks = urllib.parse.quote(new_remarks)
-        
-        # Add new remarks
         return f"{link}#{encoded_remarks}"
+
+    def _update_vmess_ps(self, link: str, new_remarks: str) -> str:
+        try:
+            payload_b64 = link[len('vmess://'):].strip()
+            # Normalize padding and decode; try standard then urlsafe
+            def _normalize(b64s: str) -> str:
+                b64s = b64s.strip().replace('\n', '').replace('\r', '')
+                pad = (-len(b64s)) % 4
+                return b64s + ('=' * pad)
+            data = None
+            for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+                try:
+                    decoded = decoder(_normalize(payload_b64))
+                    data = json.loads(decoded.decode('utf-8', errors='ignore'))
+                    break
+                except Exception:
+                    continue
+            if not isinstance(data, dict):
+                raise ValueError('Invalid vmess JSON')
+            # Replace ps with new remarks (no URL-encoding for vmess JSON)
+            data['ps'] = new_remarks
+            encoded = base64.b64encode(json.dumps(data, separators=(',', ':')).encode('utf-8')).decode('utf-8')
+            return f"vmess://{encoded}"
+        except Exception as e:
+            logging.warning(f"Failed to update vmess remarks, falling back to # syntax: {e}")
+            # Fallback to URL-encoded #remarks if parsing failed
+            if '#' in link:
+                link = link.split('#')[0]
+            import urllib.parse
+            return f"{link}#{urllib.parse.quote(new_remarks)}"

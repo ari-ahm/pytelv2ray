@@ -3,7 +3,6 @@ import logging
 import os
 import shutil
 import tempfile
-import aiohttp
 
 
 class ServiceError(Exception):
@@ -47,7 +46,6 @@ class InternalProxyManager:
         self._links_file = links_path
 
         # Build command. We allow users to override/add args via config if needed.
-        # Default attempt: `xray-knife proxy -f <file> --port <port>`
         command = [
             self.xray_knife_config['path'],
             self.subcommand,
@@ -91,22 +89,42 @@ class InternalProxyManager:
             raise ServiceError("Internal proxy started but failed health check")
 
     async def _health_check(self, timeout: int = 10) -> bool:
-        """Test if the internal proxy is working by making an HTTP request through it."""
+        """Test if the internal proxy is working by making an HTTPS request through it.
+        Uses requests with SOCKS support (PySocks). Retries until overall timeout elapses.
+        """
         try:
-            proxy_url = f"socks5://{self.listen_host}:{self.listen_port}"
-            connector = aiohttp.ProxyConnector.from_url(proxy_url)
-            
-            async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=timeout)) as session:
-                # Test with Cloudflare's DNS endpoint
-                async with session.get("https://1.1.1.1/cdn-cgi/trace") as response:
-                    if response.status == 200:
+            import time
+            import requests
+            proxies = {
+                'http': f'socks5h://{self.listen_host}:{self.listen_port}',
+                'https': f'socks5h://{self.listen_host}:{self.listen_port}',
+            }
+            deadline = time.monotonic() + max(1, timeout)
+            last_error = None
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                per_attempt_timeout = max(1, min(3, int(remaining)))
+                try:
+                    resp = await asyncio.to_thread(
+                        requests.get,
+                        'https://1.1.1.1/cdn-cgi/trace',
+                        proxies=proxies,
+                        timeout=per_attempt_timeout,
+                    )
+                    if resp.status_code == 200:
                         logging.info("Internal proxy health check passed")
                         return True
-                    else:
-                        logging.warning(f"Internal proxy health check failed with status {response.status}")
-                        return False
+                    last_error = f"HTTP {resp.status_code}"
+                except Exception as e:
+                    last_error = e
+                # Small backoff before retrying
+                await asyncio.sleep(0.5)
+            logging.warning(f"Internal proxy health check failed after {timeout}s: {last_error}")
+            return False
         except Exception as e:
-            logging.warning(f"Internal proxy health check failed: {e}")
+            logging.warning(f"Internal proxy health check failed unexpectedly: {e}")
             return False
 
     async def stop(self):

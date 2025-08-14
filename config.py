@@ -1,59 +1,85 @@
-# vless_scanner/config.py
 import json
 import logging
 import shutil
+from pathlib import Path
 
 class ConfigError(Exception):
     pass
 
-def load_config(path='config.json'):
+def _get_nested(config: dict, path: str):
+    """Safely retrieve a nested value from a dictionary using dot notation."""
+    keys = path.split('.')
+    value = config
+    for key in keys:
+        if not isinstance(value, dict) or key not in value:
+            return None
+        value = value[key]
+    return value
+
+def _validate_config(config: dict):
+    """
+    Performs rigorous validation of the configuration dictionary.
+    Raises ConfigError if validation fails.
+    """
+    # --- Telegram Validation ---
+    if not isinstance(_get_nested(config, 'telegram.api_id'), int) or _get_nested(config, 'telegram.api_id') <= 0:
+        raise ConfigError("Please configure a valid Telegram api_id (positive integer).")
+    if _get_nested(config, 'telegram.api_hash') in (None, "YOUR_API_HASH"):
+        raise ConfigError("Please configure your Telegram api_hash.")
+    if not isinstance(_get_nested(config, 'telegram.target_groups'), list) or not _get_nested(config, 'telegram.target_groups'):
+        raise ConfigError("Please provide at least one target group ID in telegram.target_groups.")
+
+    # --- GitHub Repo Validation (optional section) ---
+    if _get_nested(config, 'github_repo.enabled'):
+        if _get_nested(config, 'github_repo.github_token') == "YOUR_GITHUB_PERSONAL_ACCESS_TOKEN":
+            logging.warning("GitHub token is a placeholder; set github_repo.github_token or GITHUB_TOKEN env var.")
+        if _get_nested(config, 'github_repo.owner') in (None, "YOUR_GITHUB_USERNAME"):
+            raise ConfigError("Please configure your GitHub repository owner in github_repo.owner.")
+        if _get_nested(config, 'github_repo.repo') in (None, "YOUR_REPO_NAME"):
+            raise ConfigError("Please configure your GitHub repository name in github_repo.repo.")
+
+    # --- Xray-Knife Validation ---
+    knife_path_str = _get_nested(config, 'xray_knife.path')
+    if not knife_path_str:
+        raise ConfigError("xray_knife.path is a required setting.")
+    if not shutil.which(knife_path_str):
+        raise ConfigError(f"xray-knife binary not found or not executable at path: '{knife_path_str}'. Check the path and permissions.")
+
+    latency_url = _get_nested(config, 'xray_knife.latency_url')
+    if latency_url is not None and not isinstance(latency_url, str):
+        raise ConfigError("xray_knife.latency_url must be a string if provided.")
+
+    # --- Database Validation ---
+    max_servers = _get_nested(config, 'database.max_servers_per_location')
+    if not isinstance(max_servers, int) or max_servers <= 0:
+        raise ConfigError("database.max_servers_per_location must be a positive integer.")
+
+    # --- Internal Proxy Validation (optional section) ---
+    if _get_nested(config, 'internal_proxy.enabled'):
+        selector = _get_nested(config, 'internal_proxy.selector')
+        if selector not in ('speed_passed', 'latency_passed'):
+            raise ConfigError("internal_proxy.selector must be 'speed_passed' or 'latency_passed'.")
+
+        max_links = _get_nested(config, 'internal_proxy.max_links')
+        if not isinstance(max_links, int) or max_links <= 0:
+            raise ConfigError("internal_proxy.max_links must be a positive integer.")
+
+def load_config(path: str = 'config.json') -> dict:
     """Loads and validates the configuration from a JSON file."""
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-    except FileNotFoundError:
+    config_file = Path(path)
+    if not config_file.is_file():
         raise ConfigError(f"Configuration file '{path}' not found.")
-    except json.JSONDecodeError:
-        raise ConfigError(f"Could not decode '{path}'. Check for syntax errors.")
 
-    # Perform rigorous validation
     try:
-        assert isinstance(config['telegram']['api_id'], int) and config['telegram']['api_id'] > 0, "Please configure a valid Telegram api_id (int)."
-        assert config['telegram']['api_hash'] != "YOUR_API_HASH" and isinstance(config['telegram']['api_hash'], str) and len(config['telegram']['api_hash']) > 0, "Please configure your Telegram api_hash."
-        assert isinstance(config['telegram']['target_groups'], list) and len(config['telegram']['target_groups']) > 0, "Please provide at least one target group id."
-        
-        if config.get('github_repo', {}).get('enabled'):
-            repo_cfg = config['github_repo']
-            # Allow env override
-            if repo_cfg.get('github_token') == "YOUR_GITHUB_PERSONAL_ACCESS_TOKEN":
-                logging.warning("GitHub token is placeholder; set github_repo.github_token or GITHUB_TOKEN env var.")
-            assert repo_cfg['owner'] != "YOUR_GITHUB_USERNAME", "Please configure your GitHub repository owner."
-            assert repo_cfg['repo'] != "YOUR_REPO_NAME", "Please configure your GitHub repository name."
-            # Optional: upload_base64 flag controls content encoding
-            if 'upload_base64' not in repo_cfg:
-                repo_cfg['upload_base64'] = False
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    except json.JSONDecodeError as e:
+        raise ConfigError(f"Could not decode '{path}'. Check for syntax errors: {e}")
 
-        # Validate that the xray-knife binary is findable
-        knife_path = config['xray_knife']['path']
-        if not shutil.which(knife_path):
-            raise ConfigError(f"xray-knife binary not found or not executable at path: '{knife_path}'. Please check the path or your system's PATH environment variable.")
-        # Optional latency URL for initial tests
-        latency_url = config['xray_knife'].get('latency_url')
-        if latency_url is not None and not isinstance(latency_url, str):
-            raise ConfigError("xray_knife.latency_url must be a string if provided")
-
-        assert isinstance(config['database']['max_servers_per_location'], int) and config['database']['max_servers_per_location'] > 0
-
-        # Optional internal proxy validation
-        if config.get('internal_proxy', {}).get('enabled'):
-            ip = config['internal_proxy']
-            assert isinstance(ip.get('listen_port', 1080), int), "internal_proxy.listen_port must be an int"
-            if not isinstance(ip.get('selector', 'speed_passed'), str) or ip['selector'] not in ('speed_passed', 'latency_passed'):
-                raise ConfigError("internal_proxy.selector must be 'speed_passed' or 'latency_passed'")
-            if not isinstance(ip.get('max_links', 1), int) or ip['max_links'] <= 0:
-                raise ConfigError("internal_proxy.max_links must be a positive integer")
-
-    except (KeyError, AssertionError) as e:
+    try:
+        _validate_config(config)
+    except (KeyError, TypeError, AssertionError) as e:
+        # Catching broader errors during validation and wrapping them
         raise ConfigError(f"Invalid configuration: {e}")
 
     return config

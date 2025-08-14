@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from datetime import datetime
 from .proxy import InternalProxyManager
+from . import utils
 
 class Pipeline:
     """Orchestrates the entire process from collection to uploading."""
@@ -44,29 +45,18 @@ class Pipeline:
                         logging.info("Internal proxy started successfully")
                     except Exception as e:
                         logging.warning(f"Could not start internal proxy: {e}")
-                        # Fallback to normal Telegram proxy if configured
-                        if self.config.get('telegram', {}).get('proxy', {}).get('enabled'):
-                            logging.info("Falling back to configured Telegram proxy")
-                            runtime_proxy_cfg = self.config['telegram']['proxy']
-                        else:
-                            logging.info("No fallback proxy configured, using direct connection")
-                            runtime_proxy_cfg = None
+                        runtime_proxy_cfg = self._get_fallback_proxy_config()
                 else:
                     logging.warning("No suitable links found to start internal proxy; proceeding without it.")
-                    # Fallback to normal Telegram proxy if configured
-                    if self.config.get('telegram', {}).get('proxy', {}).get('enabled'):
-                        logging.info("Falling back to configured Telegram proxy")
-                        runtime_proxy_cfg = self.config['telegram']['proxy']
-                    else:
-                        logging.info("No fallback proxy configured, using direct connection")
-                        runtime_proxy_cfg = None
+                    runtime_proxy_cfg = self._get_fallback_proxy_config()
 
             # Determine per-group last progress
             last_progress = {}
             for group_id in self.config['telegram']['target_groups']:
                 try:
                     last_id = await self.db.get_group_progress(group_id)
-                except Exception:
+                except aiosqlite.Error as e:
+                    logging.warning(f"DB error getting progress for group {group_id}: {e}")
                     last_id = None
                 last_progress[group_id] = last_id
 
@@ -79,7 +69,7 @@ class Pipeline:
                 for gid, last_msg_id in new_progress.items():
                     if last_msg_id is not None:
                         await self.db.update_group_progress(gid, last_msg_id)
-            except Exception as e:
+            except aiosqlite.Error as e:
                 logging.warning(f"Failed to persist group progress: {e}")
 
             # Stage 2: Perform latency tests on new and old servers
@@ -103,6 +93,15 @@ class Pipeline:
                     await proxy_manager.stop()
             except Exception as e:
                 logging.warning(f"Error while stopping internal proxy: {e}")
+
+    def _get_fallback_proxy_config(self):
+        """Returns the configured Telegram proxy, or None if not enabled."""
+        if self.config.get('telegram', {}).get('proxy', {}).get('enabled'):
+            logging.info("Falling back to configured Telegram proxy")
+            return self.config['telegram']['proxy']
+        else:
+            logging.info("No fallback proxy configured, using direct connection")
+            return None
 
     async def _perform_latency_tests(self, new_links: set):
         logging.info("--- Stage 2: Performing Latency Tests ---")
@@ -168,7 +167,7 @@ class Pipeline:
             if knife_db_dir.exists():
                 shutil.rmtree(knife_db_dir)
                 logging.info(f"Deleted xray-knife directory as per configuration: {knife_db_dir}")
-        except Exception as e:
+        except OSError as e:
             logging.error(f"Could not delete xray-knife directory: {e}")
 
     async def _rename_link_with_location(self, link: str, location: str) -> str:
@@ -176,20 +175,7 @@ class Pipeline:
         Uses a minimal ISO alpha-2 -> flag conversion to keep code small. If no 2-letter
         code can be inferred, defaults to the globe emoji. Marks 403-tested servers.
         """
-        def _flag(loc: str) -> str:
-            if not loc:
-                return '🌍'
-            # Prefer explicit two-letter codes in the text (e.g., "US", "DE").
-            m = re.search(r'\b([A-Za-z]{2})\b', loc)
-            code = (loc if (len(loc) == 2 and loc.isalpha()) else (m.group(1) if m else '')).upper()
-            if code == 'UK':
-                code = 'GB'
-            if len(code) == 2 and code.isalpha():
-                base = 0x1F1E6
-                return chr(base + (ord(code[0]) - 65)) + chr(base + (ord(code[1]) - 65))
-            return '🌍'
-
-        emoji = _flag(location)
+        emoji = utils.get_flag_emoji(location)
         
         # Get last tested timestamp from database
         last_tested = await self.db.get_last_speed_tested_timestamp(link)
@@ -222,27 +208,18 @@ class Pipeline:
 
     def _update_vmess_ps(self, link: str, new_remarks: str) -> str:
         try:
-            payload_b64 = link[len('vmess://'):].strip()
-            # Normalize padding and decode; try standard then urlsafe
-            def _normalize(b64s: str) -> str:
-                b64s = b64s.strip().replace('\n', '').replace('\r', '')
-                pad = (-len(b64s)) % 4
-                return b64s + ('=' * pad)
-            data = None
-            for decoder in (base64.b64decode, base64.urlsafe_b64decode):
-                try:
-                    decoded = decoder(_normalize(payload_b64))
-                    data = json.loads(decoded.decode('utf-8', errors='ignore'))
-                    break
-                except Exception:
-                    continue
-            if not isinstance(data, dict):
-                raise ValueError('Invalid vmess JSON')
-            # Replace ps with new remarks (no URL-encoding for vmess JSON)
+            payload_b64 = link.split('vmess://', 1)[1]
+            data = utils.decode_vmess_payload(payload_b64)
+
+            if not data:
+                raise ValueError("Failed to decode vmess payload")
+
+            # Replace ps with new remarks
             data['ps'] = new_remarks
-            encoded = base64.b64encode(json.dumps(data, separators=(',', ':')).encode('utf-8')).decode('utf-8')
-            return f"vmess://{encoded}"
-        except Exception as e:
+
+            encoded_payload = base64.b64encode(json.dumps(data, separators=(',', ':')).encode('utf-8')).decode('utf-8')
+            return f"vmess://{encoded_payload}"
+        except (ValueError, TypeError) as e:
             logging.warning(f"Failed to update vmess remarks, falling back to # syntax: {e}")
             # Fallback to URL-encoded #remarks if parsing failed
             if '#' in link:

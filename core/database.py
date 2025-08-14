@@ -98,32 +98,33 @@ class DatabaseManager:
         new_delay = int(res.get('delay', 0))
         try:
             http_code = int(res.get('code')) if res.get('code') not in (None, '') else None
-        except Exception:
+        except (ValueError, TypeError):
             http_code = None
-        
+
         if location:
-            # Atomically check count and get the worst server in one go
-            query = "SELECT id, delay FROM servers WHERE location = ? AND status != 'failed' ORDER BY delay DESC, last_tested ASC LIMIT 1"
+            # Fetch all servers in the location to decide if we should insert the new one.
+            query = "SELECT id, delay FROM servers WHERE location = ? AND status != 'failed' ORDER BY delay DESC, last_tested ASC"
             async with self.conn.execute(query, (location,)) as cursor:
-                worst_server = await cursor.fetchone()
+                existing_servers = await cursor.fetchall()
 
-            async with self.conn.execute("SELECT COUNT(*) FROM servers WHERE location = ? AND status != 'failed'", (location,)) as cursor:
-                loc_count = (await cursor.fetchone())[0]
+            if len(existing_servers) >= max_per_loc:
+                worst_server = existing_servers[0]
+                # If the location is full and the new server is not better than the worst one, do nothing.
+                if new_delay >= worst_server['delay']:
+                    return  # Don't add the new server
 
-            if loc_count >= max_per_loc and (not worst_server or new_delay >= worst_server['delay']):
-                return # Location is full and this server isn't better than the worst one
-            
-            if loc_count >= max_per_loc:
+                # If the new server is better, delete the worst one to make space.
                 await self.conn.execute("DELETE FROM servers WHERE id = ?", (worst_server['id'],))
 
+        # Insert or update the new server's data.
         update_query = """
             INSERT INTO servers (link, status, delay, location, last_tested, retry_count, http_code)
             VALUES (?, 'latency_passed', ?, ?, ?, 0, ?)
-            ON CONFLICT(link) DO UPDATE SET 
-                status='latency_passed', 
-                delay=excluded.delay, 
-                location=excluded.location, 
-                last_tested=excluded.last_tested, 
+            ON CONFLICT(link) DO UPDATE SET
+                status='latency_passed',
+                delay=excluded.delay,
+                location=excluded.location,
+                last_tested=excluded.last_tested,
                 retry_count=0,
                 http_code=excluded.http_code;
         """
@@ -133,7 +134,7 @@ class DatabaseManager:
         # If this was a speed_passed server that failed, clear the speed data
         try:
             http_code = int(res.get('code')) if res.get('code') not in (None, '') else None
-        except Exception:
+        except (ValueError, TypeError):
             http_code = None
         # Only update existing rows; do NOT insert new rows for failed links
         query = """
@@ -236,10 +237,10 @@ class DatabaseManager:
                 if row and row[0]:
                     try:
                         return datetime.datetime.fromisoformat(row[0])
-                    except Exception:
+                    except (ValueError, TypeError):
                         return None
                 return None
-        except Exception:
+        except aiosqlite.Error:
             return None
 
     async def get_http_code_for_link(self, link: str) -> int | None:
@@ -251,7 +252,7 @@ class DatabaseManager:
             ) as cursor:
                 row = await cursor.fetchone()
                 return int(row[0]) if row and row[0] is not None else None
-        except Exception:
+        except aiosqlite.Error:
             return None
 
     async def close(self):

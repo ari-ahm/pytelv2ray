@@ -37,6 +37,10 @@ def load_config(path='config.json'):
         knife_path = config['xray_knife']['path']
         if not shutil.which(knife_path):
             raise ConfigError(f"xray-knife binary not found or not executable at path: '{knife_path}'. Please check the path or your system's PATH environment variable.")
+        # Optional latency URL for initial tests
+        latency_url = config['xray_knife'].get('latency_url')
+        if latency_url is not None and not isinstance(latency_url, str):
+            raise ConfigError("xray_knife.latency_url must be a string if provided")
 
         assert isinstance(config['database']['max_servers_per_location'], int) and config['database']['max_servers_per_location'] > 0
 

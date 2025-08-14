@@ -26,6 +26,11 @@ class XrayKnifeTester:
 
         test_args = self.config['test_args'] + ['-x', 'csv']
         if speed_test: test_args.append('-p')
+        # For latency tests, allow overriding the target URL (e.g., to avoid spam blocks)
+        if not speed_test:
+            latency_url = self.config.get('latency_url')
+            if isinstance(latency_url, str) and latency_url.strip():
+                test_args += ['-u', latency_url.strip()]
 
         with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.txt') as input_f, \
              tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.csv') as output_f:

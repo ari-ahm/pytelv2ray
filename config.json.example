@@ -18,7 +18,8 @@
     "path": "./xray-knife/xray-knife",
     "test_args": [
       "-t", "20"
-    ]
+    ],
+    "latency_url": "https://developers.google.com"
   },
   "internal_proxy": {
     "enabled": false,

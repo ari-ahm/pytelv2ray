@@ -153,7 +153,7 @@ class Pipeline:
         
         renamed_links = []
         for location, link in final_servers.items():
-            renamed_link = self._rename_link_with_location(link, location)
+            renamed_link = await self._rename_link_with_location(link, location)
             renamed_links.append(renamed_link)
         
         sub_content = "\n".join(renamed_links)
@@ -169,101 +169,42 @@ class Pipeline:
         except Exception as e:
             logging.error(f"Could not delete xray-knife directory: {e}")
 
-    def _rename_link_with_location(self, link: str, location: str) -> str:
-        """Rename a proxy link with location emoji and last tested timestamp in remarks."""
-        # Location to emoji mapping
-        location_emojis = {
-            'US': '🇺🇸', 'United States': '🇺🇸', 'America': '🇺🇸',
-            'UK': '🇬🇧', 'United Kingdom': '🇬🇧', 'England': '🇬🇧',
-            'DE': '🇩🇪', 'Germany': '🇩🇪',
-            'FR': '🇫🇷', 'France': '🇫🇷',
-            'JP': '🇯🇵', 'Japan': '🇯🇵',
-            'SG': '🇸🇬', 'Singapore': '🇸🇬',
-            'HK': '🇭🇰', 'Hong Kong': '🇭🇰',
-            'TW': '🇹🇼', 'Taiwan': '🇹🇼',
-            'KR': '🇰🇷', 'South Korea': '🇰🇷', 'Korea': '🇰🇷',
-            'AU': '🇦🇺', 'Australia': '🇦🇺',
-            'CA': '🇨🇦', 'Canada': '🇨🇦',
-            'NL': '🇳🇱', 'Netherlands': '🇳🇱',
-            'CH': '🇨🇭', 'Switzerland': '🇨🇭',
-            'SE': '🇸🇪', 'Sweden': '🇸🇪',
-            'NO': '🇳🇴', 'Norway': '🇳🇴',
-            'FI': '🇫🇮', 'Finland': '🇫🇮',
-            'DK': '🇩🇰', 'Denmark': '🇩🇰',
-            'RU': '🇷🇺', 'Russia': '🇷🇺',
-            'CN': '🇨🇳', 'China': '🇨🇳',
-            'IN': '🇮🇳', 'India': '🇮🇳',
-            'BR': '🇧🇷', 'Brazil': '🇧🇷',
-            'MX': '🇲🇽', 'Mexico': '🇲🇽',
-            'AR': '🇦🇷', 'Argentina': '🇦🇷',
-            'CL': '🇨🇱', 'Chile': '🇨🇱',
-            'PE': '🇵🇪', 'Peru': '🇵🇪',
-            'CO': '🇨🇴', 'Colombia': '🇨🇴',
-            'VE': '🇻🇪', 'Venezuela': '🇻🇪',
-            'EG': '🇪🇬', 'Egypt': '🇪🇬',
-            'ZA': '🇿🇦', 'South Africa': '🇿🇦',
-            'NG': '🇳🇬', 'Nigeria': '🇳🇬',
-            'KE': '🇰🇪', 'Kenya': '🇰🇪',
-            'MA': '🇲🇦', 'Morocco': '🇲🇦',
-            'TR': '🇹🇷', 'Turkey': '🇹🇷',
-            'IL': '🇮🇱', 'Israel': '🇮🇱',
-            'AE': '🇦🇪', 'UAE': '🇦🇪', 'United Arab Emirates': '🇦🇪',
-            'SA': '🇸🇦', 'Saudi Arabia': '🇸🇦',
-            'QA': '🇶🇦', 'Qatar': '🇶🇦',
-            'KW': '🇰🇼', 'Kuwait': '🇰🇼',
-            'BH': '🇧🇭', 'Bahrain': '🇧🇭',
-            'OM': '🇴🇲', 'Oman': '🇴🇲',
-            'JO': '🇯🇴', 'Jordan': '🇯🇴',
-            'LB': '🇱🇧', 'Lebanon': '🇱🇧',
-            'SY': '🇸🇾', 'Syria': '🇸🇾',
-            'IQ': '🇮🇶', 'Iraq': '🇮🇶',
-            'IR': '🇮🇷', 'Iran': '🇮🇷',
-            'PK': '🇵🇰', 'Pakistan': '🇵🇰',
-            'BD': '🇧🇩', 'Bangladesh': '🇧🇩',
-            'LK': '🇱🇰', 'Sri Lanka': '🇱🇰',
-            'NP': '🇳🇵', 'Nepal': '🇳🇵',
-            'MM': '🇲🇲', 'Myanmar': '🇲🇲',
-            'TH': '🇹🇭', 'Thailand': '🇹🇭',
-            'VN': '🇻🇳', 'Vietnam': '🇻🇳',
-            'PH': '🇵🇭', 'Philippines': '🇵🇭',
-            'MY': '🇲🇾', 'Malaysia': '🇲🇾',
-            'ID': '🇮🇩', 'Indonesia': '🇮🇩',
-            'NZ': '🇳🇿', 'New Zealand': '🇳🇿',
-            'Unknown': '🌍', 'Other': '🌍'
-        }
-        
-        # Get emoji for location
-        emoji = location_emojis.get(location, '🌍')
+    async def _rename_link_with_location(self, link: str, location: str) -> str:
+        """Rename a proxy link with location emoji and last tested timestamp in remarks.
+        Uses a minimal ISO alpha-2 -> flag conversion to keep code small. If no 2-letter
+        code can be inferred, defaults to the globe emoji. Marks 403-tested servers.
+        """
+        def _flag(loc: str) -> str:
+            if not loc:
+                return '🌍'
+            # Prefer explicit two-letter codes in the text (e.g., "US", "DE").
+            m = re.search(r'\b([A-Za-z]{2})\b', loc)
+            code = (loc if (len(loc) == 2 and loc.isalpha()) else (m.group(1) if m else '')).upper()
+            if code == 'UK':
+                code = 'GB'
+            if len(code) == 2 and code.isalpha():
+                base = 0x1F1E6
+                return chr(base + (ord(code[0]) - 65)) + chr(base + (ord(code[1]) - 65))
+            return '🌍'
+
+        emoji = _flag(location)
         
         # Get last tested timestamp from database
-        last_tested = self._get_last_tested_timestamp(link)
+        last_tested = await self.db.get_last_speed_tested_timestamp(link)
         timestamp_str = last_tested.strftime('%Y-%m-%d %H:%M') if last_tested else 'Unknown'
         
+        # Mark servers that appear to be spam-blocked (HTTP 403)
+        code = await self.db.get_http_code_for_link(link)
+        is_403 = (code == 403)
+        status_emoji = " 🚫" if is_403 else ""
+        
         # Create new remarks
-        new_remarks = f"{emoji} {location} | Tested: {timestamp_str}"
+        new_remarks = f"{emoji} {location}{status_emoji} | Tested: {timestamp_str}"
         
         # Update the link with new remarks
         return self._update_link_remarks(link, new_remarks)
 
-    def _get_last_tested_timestamp(self, link: str) -> datetime | None:
-        """Get the last tested timestamp for a link from the database."""
-        try:
-            # This is a simplified approach - in practice you'd want to make this async
-            # and query the database properly
-            import sqlite3
-            conn = sqlite3.connect(self.config['database']['path'])
-            cursor = conn.execute(
-                "SELECT speed_tested_at FROM servers WHERE link = ? AND status = 'speed_passed'",
-                (link,)
-            )
-            result = cursor.fetchone()
-            conn.close()
-            
-            if result and result[0]:
-                return datetime.fromisoformat(result[0])
-            return None
-        except Exception:
-            return None
+    
 
     def _update_link_remarks(self, link: str, new_remarks: str) -> str:
         """Update the remarks section of a proxy link. For vmess: update Base64 JSON 'ps'; others: use URL-encoded #remarks."""

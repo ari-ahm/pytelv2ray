@@ -3,7 +3,7 @@ import aiosqlite
 import datetime
 import logging
 
-DB_SCHEMA_VERSION = 5
+DB_SCHEMA_VERSION = 6
 
 class DatabaseManager:
     def __init__(self, db_path):
@@ -28,6 +28,8 @@ class DatabaseManager:
         logging.info(f"DB schema version: {current_version}. Migrating to: {DB_SCHEMA_VERSION}")
         if current_version < 5:
             await self._migrate_to_v5()
+        if current_version < 6:
+            await self._migrate_to_v6()
         
         await self.conn.execute(f"PRAGMA user_version = {DB_SCHEMA_VERSION}")
         await self.conn.commit()
@@ -50,6 +52,13 @@ class DatabaseManager:
         if 'last_tested' not in columns: await self.conn.execute("ALTER TABLE servers ADD COLUMN last_tested TIMESTAMP")
         if 'speed_tested_at' not in columns: await self.conn.execute("ALTER TABLE servers ADD COLUMN speed_tested_at TIMESTAMP")
         if 'retry_count' not in columns: await self.conn.execute("ALTER TABLE servers ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
+
+    async def _migrate_to_v6(self):
+        logging.info("Applying schema v6: Track HTTP status codes from tests")
+        table_info = await self.conn.execute("PRAGMA table_info(servers)")
+        columns = [row['name'] for row in await table_info.fetchall()]
+        if 'http_code' not in columns:
+            await self.conn.execute("ALTER TABLE servers ADD COLUMN http_code INTEGER")
 
     async def get_group_progress(self, group_id):
         async with self.conn.execute("SELECT last_message_id FROM group_progress WHERE group_id = ?", (group_id,)) as cursor:
@@ -87,6 +96,10 @@ class DatabaseManager:
     async def _handle_passed_server(self, res: dict, max_per_loc: int):
         location = res.get('location')
         new_delay = int(res.get('delay', 0))
+        try:
+            http_code = int(res.get('code')) if res.get('code') not in (None, '') else None
+        except Exception:
+            http_code = None
         
         if location:
             # Atomically check count and get the worst server in one go
@@ -104,27 +117,42 @@ class DatabaseManager:
                 await self.conn.execute("DELETE FROM servers WHERE id = ?", (worst_server['id'],))
 
         update_query = """
-            INSERT INTO servers (link, status, delay, location, last_tested, retry_count) VALUES (?, 'latency_passed', ?, ?, ?, 0)
-            ON CONFLICT(link) DO UPDATE SET status='latency_passed', delay=excluded.delay, location=excluded.location, last_tested=excluded.last_tested, retry_count=0;
+            INSERT INTO servers (link, status, delay, location, last_tested, retry_count, http_code)
+            VALUES (?, 'latency_passed', ?, ?, ?, 0, ?)
+            ON CONFLICT(link) DO UPDATE SET 
+                status='latency_passed', 
+                delay=excluded.delay, 
+                location=excluded.location, 
+                last_tested=excluded.last_tested, 
+                retry_count=0,
+                http_code=excluded.http_code;
         """
-        await self.conn.execute(update_query, (res['link'], new_delay, location, datetime.datetime.now()))
+        await self.conn.execute(update_query, (res['link'], new_delay, location, datetime.datetime.now(), http_code))
 
     async def _handle_failed_server(self, res: dict):
         # If this was a speed_passed server that failed, clear the speed data
+        try:
+            http_code = int(res.get('code')) if res.get('code') not in (None, '') else None
+        except Exception:
+            http_code = None
+        # Only update existing rows; do NOT insert new rows for failed links
         query = """
-            INSERT INTO servers (link, status, last_tested, retry_count, download, upload, speed_tested_at) 
-            VALUES (?, 'failed', ?, 1, NULL, NULL, NULL) 
-            ON CONFLICT(link) DO UPDATE SET 
-                status='failed', 
-                last_tested=excluded.last_tested, 
-                retry_count=retry_count+1,
+            UPDATE servers SET 
+                status='failed',
+                last_tested=?,
+                retry_count=COALESCE(retry_count, 0)+1,
                 download=NULL,
                 upload=NULL,
-                speed_tested_at=NULL
+                speed_tested_at=NULL,
+                http_code=?
+            WHERE link = ?
         """
-        await self.conn.execute(query, (res['link'], datetime.datetime.now()))
+        await self.conn.execute(query, (datetime.datetime.now(), http_code, res['link']))
 
     async def save_speed_test_result(self, result: dict):
+        """Persist speed test metrics without altering HTTP status code.
+        Only latency tests should update http_code.
+        """
         query = "UPDATE servers SET status = 'speed_passed', download = ?, upload = ?, speed_tested_at = ? WHERE link = ?"
         await self.conn.execute(query, (float(result.get('download', 0.0)), float(result.get('upload', 0.0)), datetime.datetime.now(), result['link']))
         await self.conn.commit()
@@ -138,6 +166,7 @@ class DatabaseManager:
                         WHEN status = 'speed_passed' THEN 0 
                         ELSE 1 
                     END,
+                    CASE WHEN http_code = 403 THEN 1 ELSE 0 END ASC,
                     COALESCE(download, 0) DESC,
                     COALESCE(delay, 999999) ASC
                 ) as rn
@@ -165,7 +194,12 @@ class DatabaseManager:
             query = """
                 SELECT link FROM servers
                 WHERE status = 'speed_passed'
-                ORDER BY (download IS NULL) ASC, download DESC, (speed_tested_at IS NULL) ASC, speed_tested_at DESC
+                ORDER BY 
+                    (http_code = 403) ASC,
+                    (download IS NULL) ASC, 
+                    download DESC, 
+                    (speed_tested_at IS NULL) ASC, 
+                    speed_tested_at DESC
                 LIMIT ?
             """
             async with self.conn.execute(query, (max_links,)) as cursor:
@@ -178,13 +212,47 @@ class DatabaseManager:
         query = """
             SELECT link FROM servers
             WHERE status = 'latency_passed'
-            ORDER BY (delay IS NULL) ASC, delay ASC, (last_tested IS NULL) ASC, last_tested DESC
+            ORDER BY 
+                (http_code = 403) ASC,
+                (delay IS NULL) ASC, 
+                delay ASC, 
+                (last_tested IS NULL) ASC, 
+                last_tested DESC
             LIMIT ?
         """
         async with self.conn.execute(query, (max_links,)) as cursor:
             async for row in cursor:
                 links.append(row[0])
         return links
+
+    async def get_last_speed_tested_timestamp(self, link: str) -> datetime.datetime | None:
+        """Return the last speed_tested_at timestamp for a link if it was speed-passed."""
+        try:
+            async with self.conn.execute(
+                "SELECT speed_tested_at FROM servers WHERE link = ? AND status = 'speed_passed'",
+                (link,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row and row[0]:
+                    try:
+                        return datetime.datetime.fromisoformat(row[0])
+                    except Exception:
+                        return None
+                return None
+        except Exception:
+            return None
+
+    async def get_http_code_for_link(self, link: str) -> int | None:
+        """Return the last recorded HTTP code for a link, if any."""
+        try:
+            async with self.conn.execute(
+                "SELECT http_code FROM servers WHERE link = ?",
+                (link,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return int(row[0]) if row and row[0] is not None else None
+        except Exception:
+            return None
 
     async def close(self):
         if self.conn: await self.conn.close()

@@ -6,11 +6,12 @@ This tool scans configured Telegram groups for proxy links, tests them with `xra
 
 - **Proxy harvesting from Telegram**: Extracts `vless`, `vmess`, `ss`, `ssr`, and `trojan` URIs.
 - **Asynchronous pipeline**: Non-blocking I/O with `asyncio` and `aiosqlite`.
-- **Latency and selective speed tests**: Uses `xray-knife` for both latency checks and optional speed tests.
+- **Latency and selective speed tests**: Uses `xray-knife` for both latency checks and optional speed tests. You can override the latency test URL via `xray_knife.latency_url` (passed as `-u`).
 - **Persistence and curation**: Keeps historical results, caps servers per location, and retries failed links.
 - **Progress-aware scanning**: Tracks last processed message per group to avoid reprocessing.
 - **Internal proxy support**: Can route Telegram collection through your own tested servers from the database.
 - **Link renaming**: Automatically adds location emojis and timestamps to uploaded links.
+- **Spam detection**: Identifies and deprioritizes proxy links that return a 403 status code from a target URL.
 - **Optional GitHub upload**: Updates or creates a repo file with the final subscription content. Set `github_repo.upload_base64` to true if you need to store base64 content; otherwise raw text is uploaded.
 - **Graceful shutdown**: Safely interrupts long-running tasks on SIGINT/SIGTERM.
 - **Log rotation**: Optional log file rotation to prevent disk space issues.
@@ -23,14 +24,15 @@ This tool scans configured Telegram groups for proxy links, tests them with `xra
   - `aiosqlite`
   - `PyGithub`
   - `PySocks`
+  - `requests`
   - `pytest`, `pytest-asyncio` (for tests)
 - External binary: `xray-knife` (see below)
 
 ## Install
 
-    ```bash
-    pip install -r requirements.txt
-    ```
+```bash
+pip install -r requirements.txt
+```
 
 ## External binary: xray-knife
 
@@ -59,7 +61,8 @@ Edit `config.json` with your values. Example:
   },
   "xray_knife": {
     "path": "./xray-knife/xray-knife",
-    "test_args": ["-t", "20"]
+    "test_args": ["-t", "20"],
+    "latency_url": "https://developers.google.com"
   },
   "internal_proxy": {
     "enabled": false,
@@ -69,6 +72,7 @@ Edit `config.json` with your values. Example:
     "listen_port": 1080,
     "xray_knife_args": []
   },
+  
   "speed_test": {
     "enabled": true,
     "min_download_mbps": 5.0,
@@ -111,10 +115,11 @@ Notes:
 
 1. **Optional internal proxy**: If enabled, starts a local SOCKS5 proxy using the best servers from your database.
 2. **Collect messages**: Fetch recent messages from all configured Telegram groups and extract proxy links.
-3. **Latency testing**: Run `xray-knife` latency tests on new links plus eligible retries; persist results in SQLite.
-4. **Speed testing**: Optionally select top latency-passed candidates per location and run speed tests; persist results and pick the best per location.
-5. **Link renaming**: Add location emojis and timestamps to the final links.
-6. **GitHub upload**: If enabled, upload the subscription file to the configured GitHub repo.
+3. **Latency testing**: Run `xray-knife` latency tests (optionally using `latency_url`) on new links plus eligible retries; persist results and HTTP codes in SQLite.
+4. **403-aware selection**: Servers with HTTP 403 are deprioritized.
+5. **Speed testing**: Optionally select top latency-passed candidates per location (non-403 preferred) and run speed tests; persist results and pick the best per location.
+6. **Link renaming**: Add location emojis and timestamps to the final links, and a 🚫 suffix for 403 servers.
+7. **GitHub upload**: If enabled, upload the subscription file to the configured GitHub repo.
 
 ### Internal Proxy Feature
 
@@ -127,6 +132,13 @@ Config options:
 - `max_links`: number of links to feed to the internal proxy
 - `listen_host` / `listen_port`: where the local SOCKS5 listens
 - `xray_knife_args`: extra CLI flags passed to `xray-knife proxy` (advanced)
+
+### 403 Handling
+
+- The `xray-knife` CSV output includes a `code` column. The app stores it as `servers.http_code`.
+- If the HTTP code is 403 during testing, that server is considered likely spam-blocked.
+- Selection queries prefer non-403 servers over 403 ones.
+- Final link remarks include a 🚫 emoji when the last recorded code was 403.
 
 ### Link Renaming
 

@@ -161,11 +161,13 @@ class Pipeline:
         await self.uploader.upload(sub_content)
 
     def _cleanup_xray_knife_db(self):
+        if not self.config.get('logging', {}).get('cleanup_xray_knife_dir'):
+            return
         try:
             knife_db_dir = Path.home() / ".xray-knife"
             if knife_db_dir.exists():
                 shutil.rmtree(knife_db_dir)
-                logging.info(f"Deleted xray-knife directory: {knife_db_dir}")
+                logging.info(f"Deleted xray-knife directory as per configuration: {knife_db_dir}")
         except Exception as e:
             logging.error(f"Could not delete xray-knife directory: {e}")
 

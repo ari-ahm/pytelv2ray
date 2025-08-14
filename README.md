@@ -110,6 +110,7 @@ Notes:
 - `xray_knife.path` must point to the actual executable (the app validates it with your system PATH). If the file is inside a folder like `xray-knife/xray-knife`, set that exact path.
 - `speed_test.min_download_mbps` filters out servers below this threshold when selecting best per location.
 - GitHub token can be set via `GITHUB_TOKEN` environment variable as fallback.
+- `logging.cleanup_xray_knife_dir`: Set to `true` to automatically delete the `~/.xray-knife` directory on shutdown. This directory may be used by `xray-knife` for its own database or cache. Defaults to `false`. Use with caution.
 
 ## How it works
 
@@ -174,4 +175,5 @@ Use cron/systemd to run periodically. Example crontab entry (every 30 minutes):
 - **GitHub upload failures**: Check token permissions (repo scope), repository name/owner, and that the file path is correct.
 - **Internal proxy fails**: Ensure you have speed/latency-tested servers in the database before enabling.
 - **Large log files**: Enable log rotation in config to prevent disk space issues.
+- **`xray-knife` issues after running**: If `xray-knife` seems to lose its history or configuration, check if you have enabled `logging.cleanup_xray_knife_dir`. This option, disabled by default, removes the `~/.xray-knife` directory on shutdown.
 

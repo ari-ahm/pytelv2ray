@@ -50,7 +50,8 @@
       "enabled": true,
       "max_bytes": 5242880,
       "backup_count": 3
-    }
+    },
+    "cleanup_xray_knife_dir": false
   },
   "database": {
     "path": "servers.db",

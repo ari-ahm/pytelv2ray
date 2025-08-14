@@ -49,7 +49,7 @@ Edit `config.json` with your values. Example:
   "telegram": {
     "api_id": 1234567,
     "api_hash": "YOUR_API_HASH",
-    "session_name": "my_telegram_session",
+    "session_string": "YOUR_SESSION_STRING_HERE",
     "target_groups": [-1001234567890],
     "fetch_chunk_size": 200,
     "proxy": {
@@ -150,13 +150,32 @@ Links uploaded to GitHub are automatically renamed with:
 
 Example: `vless://.../path#%F0%9F%87%BA%F0%9F%87%B8%20United%20States%20%7C%20Tested%3A%202025-01-15%2014%3A30`
 
+## Generating a Telegram Session String
+
+This application uses a `session_string` for authentication, which is more reliable for non-interactive use. You need to generate this string once.
+
+1.  **Create a new Python file** (e.g., `generate_session.py`) with the following content:
+    ```python
+    from telethon.sync import TelegramClient
+    from telethon.sessions import StringSession
+
+    # Replace with your own values
+    api_id = 1234567
+    api_hash = 'YOUR_API_HASH'
+
+    with TelegramClient(StringSession(), api_id, api_hash) as client:
+        print("\\nYour session string is:\\n")
+        print(client.session.save())
+    ```
+2.  **Run the script from your terminal**: `python generate_session.py`.
+3.  **Follow the prompts**: Enter your phone number, login code, and 2FA password when asked.
+4.  **Copy the output string** and paste it into the `session_string` field in your `config.json`.
+
 ## Run
 
 ```bash
 python app.py
 ```
-
-On first run, Telethon will prompt for your phone number, login code, and 2FA (if enabled) to create the `.session` file.
 
 Logs are written to `scanner.log` by default; optional rotation can be enabled via `logging.rotate`.
 

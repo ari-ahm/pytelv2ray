@@ -1,3 +1,4 @@
+import asyncio
 import re
 import base64
 import json
@@ -56,3 +57,56 @@ def decode_vmess_payload(payload_b64: str) -> Optional[Dict[str, Any]]:
 
     logging.warning(f"Failed to decode vmess payload: {payload_b64[:30]}...")
     return None
+
+class ServiceError(Exception):
+    pass
+
+async def run_subprocess_with_timeout(
+    command: list[str],
+    timeout_seconds: int,
+    shutdown_event: asyncio.Event
+) -> tuple[bytes, bytes]:
+    """
+    Runs a subprocess with a specified timeout and a graceful shutdown event.
+    Raises ServiceError on failure/timeout, and CancelledError on shutdown.
+    """
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+
+    wait_task = asyncio.create_task(process.wait())
+    shutdown_task = asyncio.create_task(shutdown_event.wait())
+
+    done, pending = await asyncio.wait(
+        {wait_task, shutdown_task},
+        timeout=timeout_seconds,
+        return_when=asyncio.FIRST_COMPLETED
+    )
+
+    for task in pending:
+        task.cancel()
+
+    if shutdown_task in done:
+        logging.warning(f"Shutdown signal received, terminating process: {' '.join(command)}")
+        process.terminate()
+        await process.wait()
+        raise asyncio.CancelledError()
+
+    if not done:
+        logging.error(f"Process timed out after {timeout_seconds}s: {' '.join(command)}")
+        process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            process.kill()
+        await process.wait()
+        raise ServiceError(f"Process timed out: {' '.join(command)}")
+
+    stdout, stderr = await process.communicate()
+    if process.returncode != 0:
+        error_message = stderr.decode('utf-8', errors='ignore').strip()
+        raise ServiceError(f"Process failed with code {process.returncode}: {' '.join(command)}\n{error_message}")
+
+    return stdout, stderr

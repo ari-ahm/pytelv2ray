@@ -2,7 +2,7 @@
   "telegram": {
     "api_id": 1234567,
     "api_hash": "YOUR_API_HASH",
-    "session_name": "my_telegram_session",
+    "session_string": "YOUR_SESSION_STRING_HERE",
     "target_groups": [
       -1001234567890
     ],
@@ -19,7 +19,8 @@
     "test_args": [
       "-t", "20"
     ],
-    "latency_url": "https://developers.google.com"
+    "latency_url": "https://developers.google.com",
+    "timeout_seconds": 300
   },
   "internal_proxy": {
     "enabled": false,

@@ -1,13 +1,10 @@
-# vless_scanner/core/tester.py
 import asyncio
 import logging
 import csv
 import os
 import tempfile
 import shutil
-
-class ServiceError(Exception):
-    pass
+from .utils import run_subprocess_with_timeout, ServiceError
 
 class XrayKnifeTester:
     def __init__(self, config: dict, stats, shutdown_event: asyncio.Event):
@@ -17,81 +14,62 @@ class XrayKnifeTester:
         self._validate_path()
 
     def _validate_path(self):
-        path = self.config['path']
-        if not shutil.which(path):
+        """Ensures the configured xray-knife path is a valid executable."""
+        path = self.config.get('path')
+        if not path or not shutil.which(path):
             raise ServiceError(f"xray-knife binary not found or not executable at path: {path}")
 
-    async def run_test(self, links_to_test: set, speed_test=False, timeout_seconds: int | None = 300) -> list[dict]:
-        if not links_to_test: return []
+    async def run_test(self, links_to_test: set, speed_test: bool = False) -> list[dict]:
+        """
+        Runs a test on a set of links using xray-knife.
 
-        test_args = self.config['test_args'] + ['-x', 'csv']
-        if speed_test: test_args.append('-p')
-        # For latency tests, allow overriding the target URL (e.g., to avoid spam blocks)
-        if not speed_test:
-            latency_url = self.config.get('latency_url')
-            if isinstance(latency_url, str) and latency_url.strip():
-                test_args += ['-u', latency_url.strip()]
+        Args:
+            links_to_test: A set of proxy links to test.
+            speed_test: Whether to perform a speed test or a latency test.
 
-        with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.txt') as input_f, \
-             tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.csv') as output_f:
-            input_filename, output_filename = input_f.name, output_f.name
-            input_f.writelines(f"{link}\n" for link in links_to_test)
-            input_f.flush()
+        Returns:
+            A list of dictionaries, where each dictionary represents a test result from the CSV output.
+        """
+        if not links_to_test:
+            return []
 
-        process = None
+        # Prepare arguments for xray-knife
+        test_args = list(self.config.get('test_args', [])) + ['-x', 'csv']
+        if speed_test:
+            test_args.append('-p')
+        elif self.config.get('latency_url'):
+            test_args.extend(['-u', self.config['latency_url']])
+
+        timeout = int(self.config.get('timeout_seconds', 300))
+
+        # Create temporary files for input and output
+        input_fd, input_path = tempfile.mkstemp(suffix='.txt', text=True)
+        output_fd, output_path = tempfile.mkstemp(suffix='.csv', text=True)
+
         try:
-            command = [self.config['path'], 'http', '-f', input_filename, '-o', output_filename] + test_args
+            # Write links to the input file
+            with os.fdopen(input_fd, 'w') as f:
+                f.writelines(f"{link}\n" for link in links_to_test)
+
+            command = [self.config['path'], 'http', '-f', input_path, '-o', output_path] + test_args
             logging.info(f"Executing xray-knife (Speedtest: {speed_test}) on {len(links_to_test)} links...")
-            
-            process = await asyncio.create_subprocess_exec(
-                *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-            )
 
-            # Wait for the process to complete or for a shutdown signal
-            wait_task = asyncio.create_task(process.wait())
-            shutdown_task = asyncio.create_task(self.shutdown_event.wait())
-            
-            tasks = {wait_task, shutdown_task}
-            if timeout_seconds and timeout_seconds > 0:
-                # Create a timeout task to prevent indefinite hangs
-                timeout_task = asyncio.create_task(asyncio.sleep(timeout_seconds))
-                tasks.add(timeout_task)
+            await run_subprocess_with_timeout(command, timeout, self.shutdown_event)
 
-            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            # Read the results from the output file
+            with os.fdopen(output_fd, 'r', encoding='utf-8') as f:
+                # Filter out empty lines that might be at the end of the file
+                non_empty_lines = (line for line in f if line.strip())
+                return list(csv.DictReader(non_empty_lines))
 
-            if shutdown_task in done:
-                logging.warning("Shutdown signal received, terminating xray-knife process...")
-                process.terminate()
-                await process.wait()
-                # Cancel the process wait task to avoid a warning
-                wait_task.cancel()
-                raise asyncio.CancelledError()
-
-            if 'timeout_task' in locals() and timeout_task in done:
-                logging.error(f"xray-knife timed out after {timeout_seconds}s; terminating process...")
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    process.kill()
-                    await process.wait()
-                wait_task.cancel()
-                raise ServiceError("xray-knife test timed out")
-
-            # If we are here, the process finished on its own
-            shutdown_task.cancel() # Clean up the shutdown watcher
-
-            stdout, stderr = await process.communicate()
-
-            if process.returncode != 0:
-                raise ServiceError(f"xray-knife failed. Stderr:\n{stderr.decode()}")
-
-            with open(output_filename, 'r', encoding='utf-8') as f:
-                return list(csv.DictReader(f))
-        
+        except ServiceError as e:
+            logging.error(f"Test failed: {e}")
+            return []
+        except asyncio.CancelledError:
+            logging.warning("Test run was cancelled due to shutdown signal.")
+            return []
         finally:
-            if process and process.returncode is None:
-                process.terminate() # Ensure cleanup on unexpected exit
-                await process.wait()
-            os.remove(input_filename)
-            os.remove(output_filename)
+            # Ensure temporary files are cleaned up
+            os.close(output_fd) # Close the file descriptor for output_path
+            os.remove(input_path)
+            os.remove(output_path)
